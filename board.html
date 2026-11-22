@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lineo Orders — Jira Board</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --col-bg: #ebecf0;
+      --text: #172b4d;
+      --muted: #5e6c84;
+      --border: #dfe1e6;
+      --accent: #0052cc;
+      --danger: #de350b;
+      --danger-bg: #ffebe6;
+      --new-bg: #e6fcff;
+      --new-border: #00b8d9;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    .meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .sound-alert {
+      font-size: 12px;
+      font-weight: 600;
+      color: #006644;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    input[type="search"], select, button {
+      height: 34px;
+      padding: 0 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: #fff;
+      color: #172b4d;
+      border: 1px solid #b3bac5;
+    }
+
+    button.sound-on {
+      background: #e3fcef;
+      color: #006644;
+      border: 1px solid #57d9a3;
+    }
+
+    button.sound-off {
+      background: #ffebe6;
+      color: #bf2600;
+      border: 1px solid #ff8f73;
+    }
+
+    button:hover { filter: brightness(0.97); }
+
+    .board {
+      display: flex;
+      gap: 12px;
+      padding: 16px;
+      overflow-x: auto;
+      align-items: flex-start;
+      min-height: calc(100vh - 70px);
+    }
+
+    .column {
+      flex: 0 0 285px;
+      background: var(--col-bg);
+      border-radius: 6px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      max-height: calc(100vh - 102px);
+    }
+
+    .col-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+
+    .col-count {
+      background: rgba(9, 30, 66, 0.13);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 11px;
+    }
+
+    .cards {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .card {
+      background: var(--surface);
+      border-radius: 4px;
+      padding: 10px 12px;
+      box-shadow: 0 1px 1px rgba(9, 30, 66, 0.25);
+      border-left: 3px solid var(--accent);
+    }
+
+    .card.is-new {
+      background: var(--new-bg);
+      border-left-color: var(--new-border);
+    }
+
+    .card.blocked {
+      border-left-color: var(--danger);
+      background: #fffafa;
+    }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      gap: 6px;
+    }
+
+    .card-id { font-weight: 700; }
+
+    .badges { display: flex; gap: 4px; }
+
+    .badge-new {
+      background: #b3f5ff;
+      color: #006c80;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+
+    .badge-blocked {
+      background: var(--danger-bg);
+      color: var(--danger);
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+
+    .card-title {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+
+    .card-notes {
+      font-size: 12px;
+      color: var(--text);
+      background: #f4f5f7;
+      padding: 6px 8px;
+      border-radius: 3px;
+      margin-bottom: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .card-meta {
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .empty {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 16px 8px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title-group">
+      <h1>Заказы — Jira Board</h1>
+      <div class="meta" id="sync-status">Ожидание первой проверки...</div>
+      <div class="sound-alert" id="sound-event-log">Звук (complete.oga): ожидание</div>
+    </div>
+
+    <div class="controls">
+      <input id="search" type="search" placeholder="Поиск..." />
+      <select id="assignee-filter">
+        <option value="">Все исполнители</option>
+      </select>
+      <button id="sound-toggle" class="sound-on" type="button">Звук: ВКЛ</button>
+      <button id="test-sound-btn" class="secondary" type="button">Тест complete.oga</button>
+      <button id="refresh-btn" type="button">Обновить сейчас</button>
+    </div>
+  </header>
+
+  <main class="board" id="board"></main>
+
+  <script>
+    const STATUSES = [
+      "создан",
+      "проектирование",
+      "ждет контрольного замера",
+      "производство",
+      "проверка",
+      "монтаж",
+      "готово"
+    ];
+
+    const JSON_URL = "../data/orders.json";
+    const SOUND_URL = "./complete.oga";
+    const POLL_INTERVAL_MS = 5_000;
+
+    let lastSignature = null;
+    let currentOrders = [];
+    let isInitialLoad = true;
+    let seenCreatedIds = new Set();
+    let highlightedIds = new Set();
+    let soundEnabled = true;
+
+    const boardEl = document.getElementById("board");
+    const statusEl = document.getElementById("sync-status");
+    const soundLogEl = document.getElementById("sound-event-log");
+    const searchEl = document.getElementById("search");
+    const assigneeEl = document.getElementById("assignee-filter");
+    const soundToggleBtn = document.getElementById("sound-toggle");
+    const testSoundBtn = document.getElementById("test-sound-btn");
+    const refreshBtn = document.getElementById("refresh-btn");
+
+    const alertAudio = new Audio(SOUND_URL);
+    alertAudio.preload = "auto";
+    alertAudio.volume = 1.0;
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function normalizeStatus(st) {
+      return String(st || "").trim().toLowerCase();
+    }
+
+    function setSoundButtonState() {
+      soundToggleBtn.textContent = soundEnabled ? "Звук: ВКЛ" : "Звук: ВЫКЛ";
+      soundToggleBtn.className = soundEnabled ? "sound-on" : "sound-off";
+    }
+
+    async function playCompleteSound(reasonText = "новый заказ") {
+      if (!soundEnabled) {
+        soundLogEl.textContent = `Звук выключен (${reasonText})`;
+        return;
+      }
+
+      const nowTime = new Date().toLocaleTimeString("ru-RU");
+      try {
+        alertAudio.currentTime = 0;
+        await alertAudio.play();
+        soundLogEl.textContent = `complete.oga сыграл в ${nowTime} (${reasonText})`;
+      } catch (err) {
+        soundLogEl.textContent = `Не удалось воспроизвести complete.oga в ${nowTime} (${err.message}) — кликните по странице или нажмите «Тест complete.oga»`;
+      }
+    }
+
+    function updateAssigneeOptions(orders) {
+      const prev = assigneeEl.value;
+      const names = [...new Set(orders.map(o => o.assignee_name).filter(Boolean))].sort();
+      assigneeEl.innerHTML = `<option value="">Все исполнители</option>` +
+        names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+      if (names.includes(prev)) assigneeEl.value = prev;
+    }
+
+    function renderBoard(orders) {
+      const q = searchEl.value.trim().toLowerCase();
+      const assignee = assigneeEl.value;
+
+      const filtered = orders.filter(o => {
+        if (assignee && o.assignee_name !== assignee) return false;
+        if (!q) return true;
+        const haystack = [
+          o.id, o.object_name, o.client_name, o.client_phone, o.assignee_name, o.notes, o.status
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+
+      const grouped = new Map(STATUSES.map(s => [s, []]));
+      const other = [];
+
+      for (const order of filtered) {
+        const st = normalizeStatus(order.status);
+        if (grouped.has(st)) {
+          grouped.get(st).push(order);
+        } else {
+          other.push(order);
+        }
+      }
+
+      const columnsToRender = [...STATUSES];
+      if (other.length > 0) columnsToRender.push("другой статус");
+
+      boardEl.innerHTML = columnsToRender.map(colName => {
+        const items = colName === "другой статус" ? other : grouped.get(colName);
+        const cardsHtml = items.length
+          ? items.map(item => {
+              const isNew = highlightedIds.has(item.id);
+              return `
+                <article class="card ${item.is_blocked ? "blocked" : ""} ${isNew ? "is-new" : ""}">
+                  <div class="card-top">
+                    <span class="card-id">#${escapeHtml(item.id)}</span>
+                    <div class="badges">
+                      ${isNew ? `<span class="badge-new">НОВЫЙ</span>` : ""}
+                      ${item.is_blocked ? `<span class="badge-blocked">BLOCKED</span>` : ""}
+                    </div>
+                  </div>
+                  <div class="card-title">${escapeHtml(item.object_name || "Без названия объекта")}</div>
+                  ${item.notes ? `<div class="card-notes">${escapeHtml(item.notes)}</div>` : ""}
+                  <div class="card-meta">
+                    <span><b>Клиент:</b> ${escapeHtml(item.client_name || "—")}</span>
+                    <span><b>Тел:</b> ${escapeHtml(item.client_phone || "—")}</span>
+                    <span><b>Исполнитель:</b> ${escapeHtml(item.assignee_name || "—")}</span>
+                  </div>
+                </article>
+              `;
+            }).join("")
+          : `<div class="empty">Нет заказов</div>`;
+
+        return `
+          <section class="column">
+            <div class="col-header">
+              <span>${escapeHtml(colName)}</span>
+              <span class="col-count">${items.length}</span>
+            </div>
+            <div class="cards">${cardsHtml}</div>
+          </section>
+        `;
+      }).join("");
+    }
+
+    function detectNewCreatedOrders(orders) {
+      const currentCreated = orders.filter(o => normalizeStatus(o.status) === "создан");
+      const currentCreatedIds = new Set(currentCreated.map(o => o.id));
+
+      if (isInitialLoad) {
+        seenCreatedIds = currentCreatedIds;
+        isInitialLoad = false;
+        return [];
+      }
+
+      const newlyAdded = currentCreated.filter(o => !seenCreatedIds.has(o.id));
+      seenCreatedIds = currentCreatedIds;
+      return newlyAdded;
+    }
+
+    async function checkAndSync(force = false) {
+      const nowStr = new Date().toLocaleTimeString("ru-RU");
+      try {
+        const res = await fetch(`${JSON_URL}?t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const rawText = await res.text();
+        if (!force && rawText === lastSignature) {
+          statusEl.textContent = `Без изменений · проверено в ${nowStr} (заказов: ${currentOrders.length})`;
+          return;
+        }
+
+        const parsed = JSON.parse(rawText);
+        if (!Array.isArray(parsed)) throw new Error("JSON должен быть массивом");
+
+        const newlyAdded = detectNewCreatedOrders(parsed);
+        if (newlyAdded.length > 0) {
+          newlyAdded.forEach(o => highlightedIds.add(o.id));
+          const titles = newlyAdded.map(o => `#${o.id} ${o.object_name || ""}`).join(", ");
+          await playCompleteSound(`новый заказ «создан»: ${titles}`);
+        }
+
+        lastSignature = rawText;
+        currentOrders = parsed;
+        updateAssigneeOptions(currentOrders);
+        renderBoard(currentOrders);
+        statusEl.textContent = `Обновлено в ${nowStr} · заказов: ${currentOrders.length}`;
+      } catch (err) {
+        statusEl.textContent = `Ошибка чтения (${nowStr}): ${err.message}`;
+      }
+    }
+
+    soundToggleBtn.addEventListener("click", () => {
+      soundEnabled = !soundEnabled;
+      setSoundButtonState();
+      soundLogEl.textContent = soundEnabled ? "Звук включён (complete.oga)" : "Звук выключен";
+    });
+
+    testSoundBtn.addEventListener("click", async () => {
+      const prev = soundEnabled;
+      soundEnabled = true;
+      setSoundButtonState();
+      await playCompleteSound("кнопка теста");
+      soundEnabled = prev;
+      setSoundButtonState();
+    });
+
+    searchEl.addEventListener("input", () => renderBoard(currentOrders));
+    assigneeEl.addEventListener("change", () => renderBoard(currentOrders));
+    refreshBtn.addEventListener("click", () => checkAndSync(true));
+
+    setSoundButtonState();
+    checkAndSync(true);
+    setInterval(() => checkAndSync(false), POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>

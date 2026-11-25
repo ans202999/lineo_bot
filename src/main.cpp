@@ -95,7 +95,8 @@ inline const std::vector<StageRule>& getStageRules() {
         {Project,    "проектирование", "закуп",          true},
         {Purchase,   "закуп",          "производство",   true},
         {Production, "производство",   "сборка",         true},
-        {Assemble,   "сборка",         "заказ выполнен", true}
+        {Assemble,   "сборка",         "монтаж",         true},
+        {Assemble,   "монтаж",         "заказ выполнен", true}
     };
     return rules;
 }
@@ -121,7 +122,8 @@ std::optional<std::string> findNextStatus(const std::string& currentStatus) {
 constexpr const char* kUsersFilePath = "data/users.json";
 // Замените на ваш реальный Telegram user_id для доступа к /users
 // constexpr std::int64_t kAdminUserId = 123;
-constexpr std::int64_t kAdminUserId = 102719261;
+// constexpr std::int64_t kAdminUserId = 102719261;
+constexpr std::int64_t kAdminUserId = 883160581;
 
 struct BotUser {
     std::int64_t id = 0;
@@ -176,29 +178,29 @@ Roles getUserRole(const std::vector<BotUser>& users, std::int64_t userId) {
     return it->role;
 }
 
-std::vector<BotUser> loadUsers(const fs::path& path) {
-    std::vector<BotUser> users;
-    if (!fs::exists(path)) {
-        return users;
+bool loadUsersFromFile(const std::string& path, std::vector<BotUser>& outUsers) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) {
+        return false;
     }
 
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        std::cerr << "[WARN] Не удалось открыть файл пользователей: " << path << "\n";
-        return users;
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        return false;
     }
 
     try {
         json j;
-        in >> j;
-        if (j.is_array()) {
-            users = j.get<std::vector<BotUser>>();
+        ifs >> j;
+        if (!j.is_array()) {
+            return false;
         }
-    } catch (const std::exception& e) {
-        std::cerr << "[ERROR] Ошибка парсинга JSON (" << path << "): " << e.what() << "\n";
+        outUsers = j.get<std::vector<BotUser>>();
+        return true;
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse users file (" << path << "): " << ex.what() << "\n";
+        return false;
     }
-
-    return users;
 }
 
 bool saveUsers(const fs::path& path, const std::vector<BotUser>& users) {
@@ -269,13 +271,35 @@ struct OrderDraft {
     std::string notes;
 };
 
+struct OrderNote {
+    std::string role;
+    std::string text;
+};
+
+void to_json(json& j, const OrderNote& n) {
+    j = json{
+        {"role", n.role},
+        {"text", n.text}
+    };
+}
+
+void from_json(const json& j, OrderNote& n) {
+    n.role = j.value("role", "");
+    n.text = j.value("text", "");
+}
+
+struct NoteDraft {
+    bool waitingNote = false;
+    int orderId = 0;
+};
+
 struct OrderCard {
     int id = 0;
     std::int64_t managerId = 0;
     std::string objectName;
     std::string clientName;
     std::string clientPhone;
-    std::string notes;
+    std::vector<OrderNote> notes;
     std::string status = "создан";
     std::string assigneeName;
     bool isBlocked = false;
@@ -303,11 +327,22 @@ void from_json(const json& j, OrderCard& o) {
     o.objectName   = j.value("object_name", "");
     o.clientName   = j.value("client_name", "");
     o.clientPhone  = j.value("client_phone", "");
-    o.notes        = j.value("notes", "");
     o.status       = j.value("status", std::string("создан"));
     o.assigneeName = j.value("assignee_name", "");
     o.isBlocked    = j.value("is_blocked", false);
     o.blockReason  = j.value("block_reason", "");
+
+    o.notes.clear();
+    if (j.contains("notes")) {
+        if (j["notes"].is_array()) {
+            o.notes = j["notes"].get<std::vector<OrderNote>>();
+        } else if (j["notes"].is_string()) {
+            const std::string legacyNote = j["notes"].get<std::string>();
+            if (!legacyNote.empty()) {
+                o.notes.push_back(OrderNote{"Sales", legacyNote});
+            }
+        }
+    }
 }
 
 struct BlockDraft {
@@ -318,6 +353,19 @@ struct BlockDraft {
 std::unordered_map<std::int64_t, OrderDraft> drafts;
 std::unordered_map<std::int64_t, BlockDraft> blockDrafts;
 
+bool canRoleAccessOrder(Roles role, const OrderCard& order) {
+    if (role == Admin) {
+        return true;
+    }
+    if (role == Assemble) {
+        return order.status == "сборка" || order.status == "монтаж";
+    }
+    if (auto ruleOpt = findRuleByRole(role); ruleOpt.has_value()) {
+        return order.status == ruleOpt->currentStatus;
+    }
+    return false;
+}
+
 constexpr const char* kBtnListOrders = "Список заказов";
 constexpr const char* kBtnCreateOrder = "Создать заказ";
 constexpr const char* kBtnCancelOrder = "Отмена";
@@ -325,6 +373,20 @@ constexpr const char* kBtnCancelOrder = "Отмена";
 constexpr const char* kOrdersFilePath = "data/orders.json";
 
 TgBot::ReplyKeyboardMarkup::Ptr makeSalesKeyboard() {
+    auto kb = std::make_shared<TgBot::ReplyKeyboardMarkup>();
+    kb->resizeKeyboard = true;
+
+    auto btnCreate = std::make_shared<TgBot::KeyboardButton>();
+    btnCreate->text = kBtnCreateOrder;
+
+    auto btnList = std::make_shared<TgBot::KeyboardButton>();
+    btnList->text = kBtnListOrders;
+
+    kb->keyboard.push_back({btnCreate, btnList});
+    return kb;
+}
+
+TgBot::ReplyKeyboardMarkup::Ptr makeAdminKeyboard() {
     auto kb = std::make_shared<TgBot::ReplyKeyboardMarkup>();
     kb->resizeKeyboard = true;
 
@@ -353,7 +415,10 @@ TgBot::ReplyKeyboardMarkup::Ptr makeKeyboardForRole(Roles role) {
     if (role == Sales) {
         return makeSalesKeyboard();
     }
-    if (role == Admin || findRuleByRole(role).has_value()) {
+    if (role == Admin) {
+        return makeAdminKeyboard();
+    }
+    if (findRuleByRole(role).has_value()) {
         return makeSingleButtonKeyboard(kBtnListOrders);
     }
     return nullptr;
@@ -385,19 +450,35 @@ TgBot::InlineKeyboardMarkup::Ptr makeOrderInlineKeyboard(const OrderCard& o, Rol
     auto kb = std::make_shared<TgBot::InlineKeyboardMarkup>();
     std::vector<TgBot::InlineKeyboardButton::Ptr> row;
 
-    const bool canAdvance = findNextStatus(o.status).has_value();
-    if (canAdvance && !o.isBlocked) {
-        auto btnDone = std::make_shared<TgBot::InlineKeyboardButton>();
-        btnDone->text = "Готово";
-        btnDone->callbackData = "order_done:" + std::to_string(o.id);
-        row.push_back(btnDone);
+    const bool hasAccess = canRoleAccessOrder(role, o);
+
+    if (hasAccess) {
+        if (o.isBlocked) {
+            auto btnUnblock = std::make_shared<TgBot::InlineKeyboardButton>();
+            btnUnblock->text = "Разблокировать";
+            btnUnblock->callbackData = "order_unblock:" + std::to_string(o.id);
+            row.push_back(btnUnblock);
+        } else {
+            const bool canAdvance = findNextStatus(o.status).has_value();
+            if (canAdvance) {
+                auto btnDone = std::make_shared<TgBot::InlineKeyboardButton>();
+                btnDone->text = "Готово";
+                btnDone->callbackData = "order_done:" + std::to_string(o.id);
+                row.push_back(btnDone);
+            }
+
+            auto btnBlock = std::make_shared<TgBot::InlineKeyboardButton>();
+            btnBlock->text = "Заблокировано";
+            btnBlock->callbackData = "order_block:" + std::to_string(o.id);
+            row.push_back(btnBlock);
+        }
     }
 
-    if (role == Admin && !o.isBlocked) {
-        auto btnBlock = std::make_shared<TgBot::InlineKeyboardButton>();
-        btnBlock->text = "Заблокировано";
-        btnBlock->callbackData = "order_block:" + std::to_string(o.id);
-        row.push_back(btnBlock);
+    if (hasAccess) {
+        auto btnNote = std::make_shared<TgBot::InlineKeyboardButton>();
+        btnNote->text = "Добавить заметку";
+        btnNote->callbackData = "order_note:" + std::to_string(o.id);
+        row.push_back(btnNote);
     }
 
     if (!row.empty()) {
@@ -405,19 +486,17 @@ TgBot::InlineKeyboardMarkup::Ptr makeOrderInlineKeyboard(const OrderCard& o, Rol
     }
     return kb;
 }
-
 constexpr const char* kBtnProjectOrders = "Список заказов";
 
-std::vector<OrderCard> loadOrders(const fs::path& path) {
-    std::vector<OrderCard> orders;
+void updateOrders(const fs::path& path, std::vector<OrderCard>& orders) {
     if (!fs::exists(path)) {
-        return orders;
+        return;
     }
 
     std::ifstream in(path);
     if (!in.is_open()) {
         std::cerr << "[WARN] Не удалось открыть файл заказов: " << path << "\n";
-        return orders;
+        return;
     }
 
     try {
@@ -429,8 +508,6 @@ std::vector<OrderCard> loadOrders(const fs::path& path) {
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Ошибка парсинга JSON (" << path << "): " << e.what() << "\n";
     }
-
-    return orders;
 }
 
 bool saveOrders(const fs::path& path, const std::vector<OrderCard>& orders) {
@@ -474,7 +551,16 @@ std::string formatSingleOrder(const OrderCard& o) {
            "Имя объекта: " + o.objectName + "\n"
            "ФИО клиента: " + o.clientName + "\n"
            "Номер клиента: " + o.clientPhone + "\n"
-           "Заметки: " + (o.notes.empty() ? "-" : o.notes);
+           "Заметки:";
+
+    if (o.notes.empty()) {
+        res += " -";
+    } else {
+        for (const auto& n : o.notes) {
+            res += "\n(" + n.role + ": " + n.text + ")";
+        }
+    }
+
     return res;
 }
 
@@ -508,10 +594,12 @@ int main() {
     const std::string token(tokenEnv);
     TgBot::Bot bot(token);
 
-    std::vector<BotUser> users = loadUsers(kUsersFilePath);
+    std::vector<BotUser> users;
+    loadUsersFromFile(kUsersFilePath, users);
     std::cout << "Загружено пользователей из базы: " << users.size() << "\n";
     
-    std::vector<OrderCard> orders = loadOrders(kOrdersFilePath);
+    std::vector<OrderCard> orders;
+    updateOrders(kOrdersFilePath, orders);
     int nextOrderId = 1;
     for (const auto& o : orders) {
         if (o.id >= nextOrderId) {
@@ -522,7 +610,9 @@ int main() {
 
     std::unordered_map<std::int64_t, OrderDraft> drafts;
 
-    bot.getEvents().onCommand("start", [&bot, &drafts, &users](TgBot::Message::Ptr message) {
+    std::unordered_map<std::int64_t, NoteDraft> noteDrafts;
+
+    bot.getEvents().onCommand("start", [&bot, &drafts, &users, &noteDrafts](TgBot::Message::Ptr message) {
         if (!message || !message->chat || !message->from) {
             return;
         }
@@ -535,10 +625,9 @@ int main() {
                 << " | user_id: " << userId
                 << " | chat_id: " << chatId << "\n";
 
-        // bot.getApi().sendMessage(
-        //     chatId,
-        //     "Привет! Бот запущен и готов к работе."
-        // );
+
+        loadUsersFromFile(kUsersFilePath, users);
+        noteDrafts.erase(userId);
         
         const auto role = getUserRole(users, userId);
         std::cout << "Role is " << roleToString(role) << std::endl;
@@ -554,7 +643,7 @@ int main() {
         }
     });
 
-    bot.getEvents().onAnyMessage([&bot, &drafts, &nextOrderId, &orders, &users](TgBot::Message::Ptr message) {
+    bot.getEvents().onAnyMessage([&bot, &drafts, &nextOrderId, &orders, &users, &noteDrafts](TgBot::Message::Ptr message) {
 
         if (!message || !message->chat || !message->from) {
             return;
@@ -575,7 +664,54 @@ int main() {
         const std::int64_t userId = message->from->id;
         const std::string text = message->text.value_or("");
 
+        loadUsersFromFile(kUsersFilePath, users);
+        updateOrders(kOrdersFilePath, orders);
+
         const auto role = getUserRole(users, userId);
+
+        if (auto nIt = noteDrafts.find(userId); nIt != noteDrafts.end() && nIt->second.waitingNote) {
+            if (text == kBtnCancelOrder) {
+                noteDrafts.erase(userId);
+                bot.getApi().sendMessage(
+                    chatId,
+                    "Добавление заметки отменено.",
+                    nullptr,
+                    nullptr,
+                    makeKeyboardForRole(role)
+                );
+                return;
+            }
+
+            const int targetId = nIt->second.orderId;
+            noteDrafts.erase(userId);
+
+            auto oIt = std::find_if(orders.begin(), orders.end(), [targetId](const OrderCard& o) {
+                return o.id == targetId;
+            });
+
+            if (oIt == orders.end()) {
+                bot.getApi().sendMessage(
+                    chatId,
+                    "Заказ #" + std::to_string(targetId) + " не найден.",
+                    nullptr,
+                    nullptr,
+                    makeKeyboardForRole(role)
+                );
+                return;
+            }
+
+            oIt->notes.push_back(OrderNote{roleToString(role), text});
+            saveOrders(kOrdersFilePath, orders);
+
+            bot.getApi().sendMessage(
+                chatId,
+                "📝 Заметка добавлена к заказу #" + std::to_string(targetId) + "\n\n" + formatSingleOrder(*oIt),
+                nullptr,
+                nullptr,
+                makeKeyboardForRole(role)
+            );
+            return;
+        }
 
         if (auto bIt = blockDrafts.find(userId); bIt != blockDrafts.end() && bIt->second.waitingReason) {
             if (text == kBtnCancelOrder) {
@@ -647,6 +783,33 @@ int main() {
                 return;
             }
 
+            if (role == Assemble) {
+                int count = 0;
+                for (const auto& o : orders) {
+                    if (o.status == "сборка" || o.status == "монтаж") {
+                        ++count;
+                        bot.getApi().sendMessage(
+                            chatId,
+                            formatSingleOrder(o),
+                            nullptr,
+                            nullptr,
+                            makeOrderInlineKeyboard(o, role)
+                        );
+                    }
+                }
+
+                if (count == 0) {
+                    bot.getApi().sendMessage(
+                        chatId,
+                        "Нет заказов со статусами «сборка» или «монтаж».",
+                        nullptr,
+                        nullptr,
+                        makeKeyboardForRole(role)
+                    );
+                }
+                return;
+            }
+
             // Логика для ролей из getStageRules() (Sales, Project, Purchase, Production, Assemble)
             auto ruleOpt = findRuleByRole(role);
             if (!ruleOpt.has_value()) {
@@ -682,12 +845,8 @@ int main() {
             return;
         }
 
-        if (role != Roles::Sales && role != Roles::Admin) {
-            return;
-        }
-
         // Нажатие кнопки создания заказа
-        if (text == kBtnCreateOrder) {
+        if ((role == Sales || role == Admin) && text == kBtnCreateOrder) {
             OrderDraft draft;
             draft.step = OrderStep::ObjectName;
             drafts[userId] = draft;
@@ -745,6 +904,10 @@ int main() {
 
             case OrderStep::Notes: {
                 const std::string managerName = findUserNameById(users, userId);
+                std::vector<OrderNote> initialNotes;
+                if (text != "-") {
+                    initialNotes.push_back(OrderNote{roleToString(role), text});
+                }
 
                 OrderCard card{
                     nextOrderId++,
@@ -752,7 +915,7 @@ int main() {
                     draft.objectName,
                     draft.clientName,
                     draft.clientPhone,
-                    (text == "-") ? "" : text,
+                    initialNotes,
                     "создан",
                     managerName,
                     false
@@ -778,15 +941,20 @@ int main() {
 
     });
 
-    bot.getEvents().onCommand("users", [&bot, &users](TgBot::Message::Ptr message) {
+    bot.getEvents().onCommand("users", [&bot, &users, &orders](TgBot::Message::Ptr message) {
         if (!message || !message->chat || !message->from) {
             return;
         }
 
         const std::int64_t chatId = message->chat->id;
-        const std::int64_t senderId = message->from->id;
+        const std::int64_t userId = message->from->id;
 
-        if (senderId != kAdminUserId) {
+        loadUsersFromFile(kUsersFilePath, users);
+        updateOrders(kOrdersFilePath, orders);
+
+        const auto role = getUserRole(users, userId);
+
+        if (role != Admin) {
             bot.getApi().sendMessage(chatId, "Недостаточно прав для выполнения команды.");
             return;
         }
@@ -795,6 +963,8 @@ int main() {
             bot.getApi().sendMessage(chatId, "Список пользователей пока пуст.");
             return;
         }
+        loadUsersFromFile(kUsersFilePath, users);
+        updateOrders(kOrdersFilePath, orders);
 
         std::string response = "Пользователи бота (" + std::to_string(users.size()) + "):\n\n";
         for (size_t i = 0; i < users.size(); ++i) {
@@ -909,7 +1079,7 @@ int main() {
         bot.getApi().sendMessage(chatId, "Заказ #" + std::to_string(targetOrderId) + " удалён.");
     });
 
-    bot.getEvents().onCallbackQuery([&bot, &orders, &users](TgBot::CallbackQuery::Ptr query) {
+    bot.getEvents().onCallbackQuery([&bot, &orders, &users, &noteDrafts](TgBot::CallbackQuery::Ptr query) {
         if (!query || !query->from || !query->data.has_value()) {
             return;
         }
@@ -918,6 +1088,49 @@ int main() {
         const Roles role = getUserRole(users, userId);
 
         const std::string& data = *query->data;
+
+        constexpr const char* kNotePrefix = "order_note:";
+        if (data.starts_with(kNotePrefix)) {
+            if (role == Unknown) {
+                bot.getApi().answerCallbackQuery(query->id, "Недостаточно прав.", true);
+                return;
+            }
+
+            int orderId = 0;
+            try {
+                orderId = std::stoi(data.substr(std::char_traits<char>::length(kNotePrefix)));
+            } catch (...) {
+                bot.getApi().answerCallbackQuery(query->id, "Некорректный ID заказа.", true);
+                return;
+            }
+
+            auto it = std::find_if(orders.begin(), orders.end(), [orderId](const OrderCard& o) {
+                return o.id == orderId;
+            });
+
+            if (it == orders.end()) {
+                bot.getApi().answerCallbackQuery(query->id, "Заказ не найден.", true);
+                return;
+            }
+
+            noteDrafts[userId] = NoteDraft{true, orderId};
+            bot.getApi().answerCallbackQuery(query->id, "Введите текст заметки в чат");
+
+            if (query->message) {
+                if (auto msgPtr = std::get_if<std::shared_ptr<TgBot::Message>>(&query->message->value);
+                    msgPtr && *msgPtr && (*msgPtr)->chat) {
+                    bot.getApi().sendMessage(
+                        (*msgPtr)->chat->id,
+                        "Введите заметку для заказа #" + std::to_string(orderId) + ":",
+                        nullptr,
+                        nullptr,
+                        makeCancelOrderKeyboard()
+                    );
+                }
+            }
+            return;
+        }
+
         constexpr const char* kPrefix = "order_done:";
         if (data.starts_with(kPrefix)) {
 
@@ -998,8 +1211,8 @@ int main() {
 
         constexpr const char* kBlockPrefix = "order_block:";
         if (data.starts_with(kBlockPrefix)) {
-            if (role != Admin) {
-                bot.getApi().answerCallbackQuery(query->id, "Блокировать заказы может только Admin.", true);
+            if (role == Unknown) {
+                bot.getApi().answerCallbackQuery(query->id, "Недостаточно прав.", true);
                 return;
             }
 
@@ -1020,6 +1233,16 @@ int main() {
                 return;
             }
 
+            if (!canRoleAccessOrder(role, *it)) {
+                bot.getApi().answerCallbackQuery(query->id, "Этот заказ не относится к вашему этапу.", true);
+                return;
+            }
+
+            if (it->isBlocked) {
+                bot.getApi().answerCallbackQuery(query->id, "Заказ уже заблокирован.");
+                return;
+            }
+
             blockDrafts[userId] = BlockDraft{true, orderId};
             bot.getApi().answerCallbackQuery(query->id, "Введите причину блокировки в чат");
 
@@ -1037,6 +1260,67 @@ int main() {
             }
             return;
         }
+    
+        constexpr const char* kUnblockPrefix = "order_unblock:";
+        if (data.starts_with(kUnblockPrefix)) {
+            if (role == Unknown) {
+                bot.getApi().answerCallbackQuery(query->id, "Недостаточно прав.", true);
+                return;
+            }
+
+            int orderId = 0;
+            try {
+                orderId = std::stoi(data.substr(std::char_traits<char>::length(kUnblockPrefix)));
+            } catch (...) {
+                bot.getApi().answerCallbackQuery(query->id, "Некорректный ID заказа.", true);
+                return;
+            }
+
+            auto it = std::find_if(orders.begin(), orders.end(), [orderId](const OrderCard& o) {
+                return o.id == orderId;
+            });
+
+            if (it == orders.end()) {
+                bot.getApi().answerCallbackQuery(query->id, "Заказ не найден.", true);
+                return;
+            }
+
+            if (!canRoleAccessOrder(role, *it)) {
+                bot.getApi().answerCallbackQuery(query->id, "Этот заказ не относится к вашему этапу.", true);
+                return;
+            }
+
+            if (!it->isBlocked) {
+                bot.getApi().answerCallbackQuery(query->id, "Заказ уже не заблокирован.");
+                return;
+            }
+
+            it->isBlocked = false;
+            it->blockReason.clear();
+            saveOrders(kOrdersFilePath, orders);
+
+            const std::string statusNote = "🔓 Заказ разблокирован";
+            bot.getApi().answerCallbackQuery(
+                query->id,
+                "Заказ #" + std::to_string(orderId) + " разблокирован"
+            );
+
+            if (query->message) {
+                if (auto msgPtr = std::get_if<std::shared_ptr<TgBot::Message>>(&query->message->value);
+                    msgPtr && *msgPtr && (*msgPtr)->chat) {
+                    const auto& msg = *msgPtr;
+
+                    TgBot::EditMessageTextArgs args;
+                    args.text = formatSingleOrder(*it) + "\n\n" + statusNote;
+                    args.chatId = msg->chat->id;
+                    args.messageId = msg->messageId;
+                    args.replyMarkup = makeOrderInlineKeyboard(*it, role);
+                    bot.getApi().editMessageText(args);
+                }
+            }
+            return;
+        }
+    
     });
 
     try {

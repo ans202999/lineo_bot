@@ -119,7 +119,7 @@ std::optional<std::string> findNextStatus(const std::string& currentStatus) {
     return std::nullopt;
 }
 
-constexpr const char* kUsersFilePath = "data/users.json";
+constexpr const char* kUsersFilePath = "users.json";
 // Замените на ваш реальный Telegram user_id для доступа к /users
 // constexpr std::int64_t kAdminUserId = 123;
 // constexpr std::int64_t kAdminUserId = 102719261;
@@ -258,6 +258,7 @@ bool trackUser(std::vector<BotUser>& users, const TgBot::User::Ptr& from) {
 enum class OrderStep {
     None,
     ObjectName,
+    ObjectAddress,
     ClientName,
     ClientPhone,
     Notes
@@ -266,6 +267,7 @@ enum class OrderStep {
 struct OrderDraft {
     OrderStep step = OrderStep::None;
     std::string objectName;
+    std::string objectAddress;
     std::string clientName;
     std::string clientPhone;
     std::string notes;
@@ -297,6 +299,7 @@ struct OrderCard {
     int id = 0;
     std::int64_t managerId = 0;
     std::string objectName;
+    std::string objectAddress;
     std::string clientName;
     std::string clientPhone;
     std::vector<OrderNote> notes;
@@ -311,6 +314,7 @@ void to_json(json& j, const OrderCard& o) {
         {"id", o.id},
         {"manager_id", o.managerId},
         {"object_name", o.objectName},
+        {"objectAddress", o.objectAddress},
         {"client_name", o.clientName},
         {"client_phone", o.clientPhone},
         {"notes", o.notes},
@@ -325,6 +329,7 @@ void from_json(const json& j, OrderCard& o) {
     o.id           = j.value("id", 0);
     o.managerId    = j.value("manager_id", std::int64_t{0});
     o.objectName   = j.value("object_name", "");
+    o.objectAddress= j.value("objectAddress", "");
     o.clientName   = j.value("client_name", "");
     o.clientPhone  = j.value("client_phone", "");
     o.status       = j.value("status", std::string("создан"));
@@ -370,7 +375,7 @@ constexpr const char* kBtnListOrders = "Список заказов";
 constexpr const char* kBtnCreateOrder = "Создать заказ";
 constexpr const char* kBtnCancelOrder = "Отмена";
 
-constexpr const char* kOrdersFilePath = "data/orders.json";
+constexpr const char* kOrdersFilePath = "orders.json";
 
 TgBot::ReplyKeyboardMarkup::Ptr makeSalesKeyboard() {
     auto kb = std::make_shared<TgBot::ReplyKeyboardMarkup>();
@@ -540,7 +545,7 @@ std::string formatSingleOrder(const OrderCard& o) {
         "Заказ #" + std::to_string(o.id) + "\n"
         "-------------------------\n"
         "Статус: " + o.status + "\n"
-        "Исполнитель: " + (o.assigneeName.empty() ? "-" : o.assigneeName) + "\n"
+        // "Исполнитель: " + (o.assigneeName.empty() ? "-" : o.assigneeName) + "\n"
         "Заблокирован: " + (o.isBlocked ? "да" : "нет");
 
     if (o.isBlocked && !o.blockReason.empty()) {
@@ -549,6 +554,7 @@ std::string formatSingleOrder(const OrderCard& o) {
 
     res += "\nМенеджер ID: " + std::to_string(o.managerId) + "\n"
            "Имя объекта: " + o.objectName + "\n"
+           "Адрес объекта: " + o.objectAddress + "\n"
            "ФИО клиента: " + o.clientName + "\n"
            "Номер клиента: " + o.clientPhone + "\n"
            "Заметки:";
@@ -569,6 +575,7 @@ std::string formatOrderCard(std::int64_t userId, const OrderDraft& draft) {
            "-------------------------\n"
            "Менеджер ID: " + std::to_string(userId) + "\n"
            "Имя объекта: " + draft.objectName + "\n"
+           "Адрес объекта: " + draft.objectAddress + "\n"
            "ФИО клиента: " + draft.clientName + "\n"
            "Номер клиента: " + draft.clientPhone + "\n"
            "Заметки: " + (draft.notes.empty() ? "-" : draft.notes);
@@ -591,15 +598,20 @@ int main() {
         return 1;
     }
 
+    std::string data_dir = []() {
+        const char* d = std::getenv("DATA_DIR");
+        return (d && *d) ? std::string(d) : std::string("/app/data");
+    }();
+
     const std::string token(tokenEnv);
     TgBot::Bot bot(token);
 
     std::vector<BotUser> users;
-    loadUsersFromFile(kUsersFilePath, users);
+    loadUsersFromFile(data_dir + "/" + kUsersFilePath, users);
     std::cout << "Загружено пользователей из базы: " << users.size() << "\n";
     
     std::vector<OrderCard> orders;
-    updateOrders(kOrdersFilePath, orders);
+    updateOrders(data_dir + "/" + kOrdersFilePath, orders);
     int nextOrderId = 1;
     for (const auto& o : orders) {
         if (o.id >= nextOrderId) {
@@ -612,7 +624,7 @@ int main() {
 
     std::unordered_map<std::int64_t, NoteDraft> noteDrafts;
 
-    bot.getEvents().onCommand("start", [&bot, &drafts, &users, &noteDrafts](TgBot::Message::Ptr message) {
+    bot.getEvents().onCommand("start", [&bot, &drafts, &users, &noteDrafts, &data_dir](TgBot::Message::Ptr message) {
         if (!message || !message->chat || !message->from) {
             return;
         }
@@ -626,7 +638,7 @@ int main() {
                 << " | chat_id: " << chatId << "\n";
 
 
-        loadUsersFromFile(kUsersFilePath, users);
+        loadUsersFromFile(data_dir + "/" + kUsersFilePath, users);
         noteDrafts.erase(userId);
         
         const auto role = getUserRole(users, userId);
@@ -643,7 +655,7 @@ int main() {
         }
     });
 
-    bot.getEvents().onAnyMessage([&bot, &drafts, &nextOrderId, &orders, &users, &noteDrafts](TgBot::Message::Ptr message) {
+    bot.getEvents().onAnyMessage([&bot, &drafts, &nextOrderId, &orders, &users, &noteDrafts, &data_dir](TgBot::Message::Ptr message) {
 
         if (!message || !message->chat || !message->from) {
             return;
@@ -652,7 +664,7 @@ int main() {
         // Регистрация всех, кто взаимодействует с ботом:
         const bool isNewOrUpdated = trackUser(users, message->from);
         if (isNewOrUpdated) {
-            saveUsers(kUsersFilePath, users);
+            saveUsers(data_dir + "/" + kUsersFilePath, users);
         }
 
         // Команды вроде /start обрабатываются в onCommand
@@ -664,8 +676,8 @@ int main() {
         const std::int64_t userId = message->from->id;
         const std::string text = message->text.value_or("");
 
-        loadUsersFromFile(kUsersFilePath, users);
-        updateOrders(kOrdersFilePath, orders);
+        loadUsersFromFile(data_dir + "/" + kUsersFilePath, users);
+        updateOrders(data_dir + "/" + kOrdersFilePath, orders);
 
         const auto role = getUserRole(users, userId);
 
@@ -701,7 +713,7 @@ int main() {
             }
 
             oIt->notes.push_back(OrderNote{roleToString(role), text});
-            saveOrders(kOrdersFilePath, orders);
+            saveOrders(data_dir + "/" + kOrdersFilePath, orders);
 
             bot.getApi().sendMessage(
                 chatId,
@@ -746,7 +758,7 @@ int main() {
 
             oIt->isBlocked = true;
             oIt->blockReason = text;
-            saveOrders(kOrdersFilePath, orders);
+            saveOrders(data_dir + "/" + kOrdersFilePath, orders);
 
             bot.getApi().sendMessage(
                 chatId,
@@ -883,6 +895,13 @@ int main() {
         switch (draft.step) {
             case OrderStep::ObjectName: {
                 draft.objectName = text;
+                draft.step = OrderStep::ObjectAddress;
+                bot.getApi().sendMessage(chatId, "Введите адрес:");
+                break;
+            }
+            
+            case OrderStep::ObjectAddress: {
+                draft.objectAddress = text;
                 draft.step = OrderStep::ClientName;
                 bot.getApi().sendMessage(chatId, "Введите ФИО клиента:");
                 break;
@@ -913,6 +932,7 @@ int main() {
                     nextOrderId++,
                     userId,
                     draft.objectName,
+                    draft.objectAddress,
                     draft.clientName,
                     draft.clientPhone,
                     initialNotes,
@@ -921,7 +941,7 @@ int main() {
                     false
                 };
                 orders.push_back(card);
-                saveOrders(kOrdersFilePath, orders);
+                saveOrders(data_dir + "/" + kOrdersFilePath, orders);
                 drafts.erase(userId);
 
                 bot.getApi().sendMessage(
@@ -941,7 +961,7 @@ int main() {
 
     });
 
-    bot.getEvents().onCommand("users", [&bot, &users, &orders](TgBot::Message::Ptr message) {
+    bot.getEvents().onCommand("users", [&bot, &users, &orders, &data_dir](TgBot::Message::Ptr message) {
         if (!message || !message->chat || !message->from) {
             return;
         }
@@ -949,8 +969,8 @@ int main() {
         const std::int64_t chatId = message->chat->id;
         const std::int64_t userId = message->from->id;
 
-        loadUsersFromFile(kUsersFilePath, users);
-        updateOrders(kOrdersFilePath, orders);
+        loadUsersFromFile(data_dir + "/" + kUsersFilePath, users);
+        updateOrders(data_dir + "/" + kOrdersFilePath, orders);
 
         const auto role = getUserRole(users, userId);
 
@@ -963,8 +983,8 @@ int main() {
             bot.getApi().sendMessage(chatId, "Список пользователей пока пуст.");
             return;
         }
-        loadUsersFromFile(kUsersFilePath, users);
-        updateOrders(kOrdersFilePath, orders);
+        loadUsersFromFile(data_dir + "/" + kUsersFilePath, users);
+        updateOrders(data_dir + "/" + kOrdersFilePath, orders);
 
         std::string response = "Пользователи бота (" + std::to_string(users.size()) + "):\n\n";
         for (size_t i = 0; i < users.size(); ++i) {
@@ -1041,7 +1061,7 @@ int main() {
         );
     });
 
-    bot.getEvents().onCommand("delete_order", [&bot, &orders, &users](TgBot::Message::Ptr message) {
+    bot.getEvents().onCommand("delete_order", [&bot, &orders, &users, &data_dir](TgBot::Message::Ptr message) {
         if (!message || !message->chat || !message->from) {
             return;
         }
@@ -1074,12 +1094,12 @@ int main() {
         }
 
         orders.erase(it);
-        saveOrders(kOrdersFilePath, orders);
+        saveOrders(data_dir + "/" + kOrdersFilePath, orders);
 
         bot.getApi().sendMessage(chatId, "Заказ #" + std::to_string(targetOrderId) + " удалён.");
     });
 
-    bot.getEvents().onCallbackQuery([&bot, &orders, &users, &noteDrafts](TgBot::CallbackQuery::Ptr query) {
+    bot.getEvents().onCallbackQuery([&bot, &orders, &users, &noteDrafts, &data_dir](TgBot::CallbackQuery::Ptr query) {
         if (!query || !query->from || !query->data.has_value()) {
             return;
         }
@@ -1186,7 +1206,7 @@ int main() {
             }
 
             it->status = nextStatus;
-            saveOrders(kOrdersFilePath, orders);
+            saveOrders(data_dir + "/" + kOrdersFilePath, orders);
 
             const std::string statusNote = "✅ Переведено в статус «" + nextStatus + "»";
             bot.getApi().answerCallbackQuery(
@@ -1297,7 +1317,7 @@ int main() {
 
             it->isBlocked = false;
             it->blockReason.clear();
-            saveOrders(kOrdersFilePath, orders);
+            saveOrders(data_dir + "/" + kOrdersFilePath, orders);
 
             const std::string statusNote = "🔓 Заказ разблокирован";
             bot.getApi().answerCallbackQuery(
